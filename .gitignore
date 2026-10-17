@@ -4,5 +4,6 @@ playwright-artifacts/
 data/
 *.log
 *.png
+!icons/icon128.png
 *.zip
 test-results/
