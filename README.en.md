@@ -12,7 +12,7 @@ An open-source browser extension that runs locally in Chrome or Edge and configu
 6. Only after checking the applicable HKUST rules and understanding the risks, choose automatic mode, authorize actions for your own account, and enable the task.
 7. Keep the browser open, the computer awake, and the network available. If authentication expires or the site presents CAPTCHA/MFA, an unknown page, or an uncertain result, the extension stops for manual handling.
 
-The default timezone is `Asia/Hong_Kong`, opening time is 08:00 daily, and the default target date is seven calendar days after the execution date. You can change these settings. Browser alarms may be delayed; a sleeping or closed computer cannot run a task.
+The default timezone is `Asia/Hong_Kong`, opening time is 08:00 daily, and the default target date is seven calendar days after the execution date. If the site has not exposed its time controls yet, the settings page offers preset hourly choices from 08:00 through 21:00; every choice is checked against the live site at execution time. You can change these settings. Browser alarms may be delayed; a sleeping or closed computer cannot run a task.
 
 ## Supported website and scope
 

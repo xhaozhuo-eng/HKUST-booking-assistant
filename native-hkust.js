@@ -14,7 +14,7 @@ globalThis.HKUSTNative = ({guard,fail}) => {
     e.click();
   }
   let prepared=null;
-  async function settled(expected=()=>true){
+  async function settled(expected=()=>true,phase='operation'){
     let last=Date.now(),previous='';const began=Date.now();
       do{
         guard();
@@ -25,7 +25,7 @@ globalThis.HKUSTNative = ({guard,fail}) => {
         if(Date.now()-began>1000&&!busy&&Date.now()-last>650&&expected())return;
         await pause(180);
       }while(Date.now()-began<35000);
-      fail('NETWORK_ERROR','官网响应超时；已停止当前操作，没有自动重复提交');
+      fail('NETWORK_ERROR',`官网响应超时；已停止当前操作，没有自动重复提交（${phase}）`);
   }
   async function authenticate(expected){
     guard();
@@ -52,12 +52,14 @@ globalThis.HKUSTNative = ({guard,fail}) => {
     if(!o)fail('PAGE_CHANGED','官网已没有所选设施或分类，请重新同步');
     if(e.value===o.value)return;
     e.value=o.value;e.dispatchEvent(new Event('change',{bubbles:true}));
-    await settled(()=>named(name).some(x=>x.value===String(value)));await notices();
+    await settled(()=>named(name).some(x=>x.value===String(value)),`filter:${name}`);await notices();
   }
   function readCatalog(){
     const options=name=>[...one(name).options].filter(o=>o.value&&o.value!=='_none').map(o=>({id:o.value,label:norm(o.text),location:o.parentElement.tagName==='OPTGROUP'?o.parentElement.label:'',disabled:o.disabled}));
     const date=one('filters[date]');
-    return {native:true,path:location.origin+location.pathname,scannedAt:new Date().toISOString(),categories:options('filters[facility_type]'),categoryId:one('filters[facility_type]').value,facilities:options('filters[facility]'),facilityId:one('filters[facility]').value,slots:named('selection[timeslot_wrapper][timeslots]').map(e=>({id:e.value,label:norm(e.labels?.[0]?.innerText||e.value),disabled:e.disabled})),targetDate:date.value,dateRange:{min:date.min,max:date.max},selects:[],dates:[]};
+    const slots=named('selection[timeslot_wrapper][timeslots]').map(e=>({id:e.value,label:norm(e.labels?.[0]?.innerText||e.value),disabled:e.disabled}));
+    const slotSuggestions=slots.length?[]:Array.from({length:14},(_,i)=>{const start=i+8,end=start+1;return {id:`${String(start).padStart(2,'0')}:00`,label:`${String(start).padStart(2,'0')}:00–${String(end).padStart(2,'0')}:00`,endTime:`${String(end).padStart(2,'0')}:00`,suggested:true};});
+    return {native:true,path:location.origin+location.pathname,scannedAt:new Date().toISOString(),categories:options('filters[facility_type]'),categoryId:one('filters[facility_type]').value,facilities:options('filters[facility]'),facilityId:one('filters[facility]').value,slots,slotSuggestions,targetDate:date.value,dateRange:{min:date.min,max:date.max},selects:[],dates:[]};
   }
   async function search(vars){
     prepared=null;
@@ -71,14 +73,13 @@ globalThis.HKUSTNative = ({guard,fail}) => {
     const e=one('filters[date]');
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,vars.targetDate);
     if(!e.checkValidity()||e.value!==vars.targetDate)fail('DATE_MISMATCH','目标日期不在官网可选范围内');
-    e.dispatchEvent(new Event('change',{bubbles:true}));await settled();
+    e.dispatchEvent(new Event('change',{bubbles:true}));await settled(()=>true,'date-filter');
     const search=named('search').filter(visible);
-    if(search.length===1){uiClick(search[0]);await settled(()=>named('selection[timeslot_wrapper][timeslots]').length>0||!!document.querySelector('[data-drupal-selector="edit-selection"]'));}
+    if(search.length===1){uiClick(search[0]);await settled(()=>named('selection[timeslot_wrapper][timeslots]').length>0||!!document.querySelector('[data-drupal-selector="edit-selection"]'),'calendar-results');}
     // Pin the full calendar date as well as the filter value. This avoids a stale calendar selection.
     const day=named(`select_date_${vars.targetDate}`).filter(visible);
     if(day.length!==1||day[0].disabled)fail('DATE_MISMATCH','官网日历没有可选择的目标日期');
-    uiClick(day[0]);await settled();
-    if(!named('selection[timeslot_wrapper][timeslots]').length)fail('SLOT_UNAVAILABLE','官网未返回该场地当天的可预约时段');
+    uiClick(day[0]);await settled(()=>true,'calendar-date');
     return readCatalog();
   }
   async function catalog(args){
