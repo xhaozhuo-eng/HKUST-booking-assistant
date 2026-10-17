@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "HKUST 预订助手",
+  "version": "0.10.17",
+  "description": "直接选择 HKUST 官网设施、日期和时段。晚间确认登录，次日自动执行；支持 dry-run、候补、预订记录核验与重复防护。",
+  "minimum_chrome_version": "120",
+  "permissions": [
+    "storage",
+    "alarms",
+    "notifications",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://fbs.hkust.edu.hk/*",
+    "https://w5.ab.ust.hk/fbs_user/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "options_page": "options.html",
+  "action": {
+    "default_title": "打开 HKUST 预订设置",
+    "default_icon": "icons/icon128.png"
+  },
+  "icons": {
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://fbs.hkust.edu.hk/*",
+        "https://w5.ab.ust.hk/fbs_user/*"
+      ],
+      "js": [
+        "native-hkust.js",
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'"
+  }
+}

@@ -1,0 +1,8 @@
+node_modules/
+artifacts/
+playwright-artifacts/
+data/
+*.log
+*.png
+*.zip
+test-results/

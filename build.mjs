@@ -1,0 +1,10 @@
+import {mkdir,copyFile,readFile,stat} from 'node:fs/promises';
+import {resolve,join} from 'node:path';
+const output=resolve('../dist/hkust-booking-extension');
+await mkdir(join(output,'icons'),{recursive:true});
+const files=['manifest.json','background.js','native-hkust.js','content.js','core.js','options.html','options.js','options.css','guide.html','README.md','icons/icon128.png'];
+for(const file of files)await copyFile(file,join(output,file));
+const manifest=JSON.parse(await readFile(join(output,'manifest.json'),'utf8'));
+for(const file of [manifest.background.service_worker,manifest.options_page,...manifest.content_scripts.flatMap(s=>s.js),...Object.values(manifest.icons)])await stat(join(output,file));
+console.log(output);
+console.log(`Packaged ${files.length} files, without test profiles, dependencies or stored data.`);
