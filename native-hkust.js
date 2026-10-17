@@ -58,7 +58,7 @@ globalThis.HKUSTNative = ({guard,fail}) => {
     const options=name=>[...one(name).options].filter(o=>o.value&&o.value!=='_none').map(o=>({id:o.value,label:norm(o.text),location:o.parentElement.tagName==='OPTGROUP'?o.parentElement.label:'',disabled:o.disabled}));
     const date=one('filters[date]');
     const slots=named('selection[timeslot_wrapper][timeslots]').map(e=>({id:e.value,label:norm(e.labels?.[0]?.innerText||e.value),disabled:e.disabled}));
-    const slotSuggestions=slots.length?[]:Array.from({length:14},(_,i)=>{const start=i+8,end=start+1;return {id:`${String(start).padStart(2,'0')}:00`,label:`${String(start).padStart(2,'0')}:00–${String(end).padStart(2,'0')}:00`,endTime:`${String(end).padStart(2,'0')}:00`,suggested:true};});
+    const slotSuggestions=slots.length?[]:Array.from({length:14},(_,i)=>{const start=String(i+8).padStart(2,'0');return {id:`${start}:00`,label:`${start}:00（预设开始时间）`,suggested:true};});
     return {native:true,path:location.origin+location.pathname,scannedAt:new Date().toISOString(),categories:options('filters[facility_type]'),categoryId:one('filters[facility_type]').value,facilities:options('filters[facility]'),facilityId:one('filters[facility]').value,slots,slotSuggestions,targetDate:date.value,dateRange:{min:date.min,max:date.max},selects:[],dates:[]};
   }
   async function search(vars){
