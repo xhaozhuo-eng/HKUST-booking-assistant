@@ -1,6 +1,6 @@
 {
-  "name": "hkust-booking-assistant",
-  "version": "0.10.18",
+  "name": "fkhkust-booking-system",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {

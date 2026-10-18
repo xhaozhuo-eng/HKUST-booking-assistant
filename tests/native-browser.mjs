@@ -27,7 +27,22 @@ try{
  const state=async()=>(await command('STATE')).result;
  await command('SAVE_PROFILE',{profile:structuredClone(NATIVE_PROFILE)});
  let r={...structuredClone(DEFAULT_RULE),id:'native-test',categoryId:'3',category:'Badminton',location:'SPORTS - LG1',facilityId:'2',facilityName:'Badminton Court 1',dateMode:'fixed_date',targetDate:'2026-10-24',slots:[{id:'08:00',label:'08:00'}],enabled:false};
- await command('SAVE_RULE',{rule:r});
+ r.mode='prepare';await command('SAVE_RULE',{rule:r});const prepared=await command('EXECUTE',{ruleId:r.id});assert.equal(prepared.result.status,'MANUAL_ACTION_REQUIRED',JSON.stringify(prepared));assert.equal(prepared.result.slots[0].status,'PREPARED');assert.equal(submissions,0);assert.equal((await state()).profile.verified,false);console.log('PASS first semi-automatic run prepares confirmation without dry-run or final submission');
+ const beforeFirstAuto=await state();beforeFirstAuto.profile=structuredClone(NATIVE_PROFILE);await options.evaluate(s=>chrome.storage.local.set({hkustExtensionV1:s}),beforeFirstAuto);
+ // First-ever automatic execution must work without dry-run or stored account hash.
+ r.mode='auto';await command('SAVE_RULE',{rule:r,authorized:true});
+ let first=await command('EXECUTE',{ruleId:r.id});assert.equal(first.result.status,'SUCCEEDED',JSON.stringify(first));assert.equal(submissions,1);
+ let fresh=await state();assert.equal(fresh.profile.verified,false);assert.ok(fresh.profile.accountHash);assert.ok(Object.keys(fresh.ledger).every(k=>k.startsWith(fresh.profile.accountHash+'|')));
+ console.log('PASS first automatic run binds authenticated account before duplicate keys without dry-run');
+ bookings=[];submissions=0;fresh.ledger={};fresh.profile=structuredClone(NATIVE_PROFILE);await options.evaluate(s=>chrome.storage.local.set({hkustExtensionV1:s}),fresh);
+ mode='closed';r.mode='dry_run';await command('SAVE_RULE',{rule:r});
+ const closed=await command('EXECUTE',{ruleId:r.id,forceDry:true});assert.equal(closed.result.status,'SLOT_UNAVAILABLE',JSON.stringify(closed));assert.equal(submissions,0);assert.equal((await state()).profile.verified,false);
+ r.mode='auto';r.enabled=true;await command('SAVE_RULE',{rule:r,authorized:true});fresh=await state();fresh.plans[r.id]={targetDate:r.targetDate,submitAt:Date.now()+1500};const beforeAlarmIds=fresh.runs.map(x=>x.id);
+ mode='normal';await options.evaluate(async s=>{await chrome.storage.local.set({hkustExtensionV1:s});await chrome.alarms.create('hkust:run:native-test',{when:s.plans['native-test'].submitAt});},fresh);
+ let alarmRun;const alarmDeadline=Date.now()+60000;while(Date.now()<alarmDeadline){await new Promise(r=>setTimeout(r,500));alarmRun=(await state()).runs.find(x=>!beforeAlarmIds.includes(x.id)&&x.mode==='auto'&&x.status!=='RUNNING');if(alarmRun)break;}assert.ok(alarmRun,JSON.stringify((await state()).runs.map(x=>({id:x.id,status:x.status,mode:x.mode,message:x.message}))));assert.equal(alarmRun.status,'SUCCEEDED',JSON.stringify(alarmRun));
+ assert.equal(submissions,1);assert.equal((await state()).profile.verified,false);console.log('PASS closed-period dry-run failure never blocks scheduled automatic execution at opening');
+ bookings=[];submissions=0;fresh=await state();fresh.ledger={};fresh.profile=structuredClone(NATIVE_PROFILE);await options.evaluate(s=>chrome.storage.local.set({hkustExtensionV1:s}),fresh);
+ r.mode='dry_run';r.enabled=false;await command('SAVE_RULE',{rule:r});
  let result=await command('EXECUTE',{ruleId:r.id,forceDry:true});assert.equal(result.result.status,'DRY_RUN_OK',JSON.stringify(result));assert.equal(submissions,0);assert.equal(result.result.slots[0].details.time,'08:00 - 09:00');console.log('PASS native mousedown, dynamic IDs, hidden radio, animated carousel and confirmation dry-run');
  r.mode='auto';await command('SAVE_RULE',{rule:r,authorized:true});result=await command('EXECUTE',{ruleId:r.id});assert.equal(result.result.status,'SUCCEEDED',JSON.stringify(result));assert.equal(submissions,1);assert.equal(result.result.slots[0].confirmation,'NATIVE-1');console.log('PASS native final confirm and official records confirmation');
  result=await command('EXECUTE',{ruleId:r.id});assert.equal(submissions,1);assert.equal(result.result.slots[0].status,'DUPLICATE');console.log('PASS native persistent duplicate guard');
@@ -37,9 +52,22 @@ try{
  mode='other-account';result=await command('EXECUTE',{ruleId:r.id,forceDry:true});assert.equal(result.result.status,'AUTH_REQUIRED',JSON.stringify(result));assert.equal(submissions,2);console.log('PASS account change blocks submission');
 mode='normal';result=await command('SYNC_NATIVE',{categoryId:'3',facilityId:'2',facilityName:'Badminton Court 1',location:'SPORTS - LG1',targetDate:'2026-10-24'});assert.equal(result.ok,true,JSON.stringify(result));assert.equal(result.result.facilities.length,2);assert.equal(result.result.slots.length,2);
  await options.reload();await options.waitForFunction(()=>document.getElementById('facility-catalog').options.length===3);assert.equal(await options.locator('#facility-id').isVisible(),false);assert.equal(await options.locator('#native-category').inputValue(),'3');
- await options.locator('#slot-catalog').selectOption('08:00');await options.locator('#add-slot').click();await options.locator('#slot-catalog').selectOption('09:00');await options.locator('#add-fallback').click();await options.locator('#date-mode').selectOption('fixed_date');await options.locator('#target-date').fill('2026-10-24');await options.locator('#enabled').uncheck();await options.locator('#rule-form button[type=submit]').click();await options.waitForFunction(()=>document.querySelectorAll('.rule-item').length===2);
+ await options.locator('#slot-catalog').selectOption('08:00');await options.locator('#add-slot').click();await options.locator('#slot-catalog').selectOption('09:00');await options.locator('#add-fallback').click();await options.locator('#date-mode').selectOption('fixed_date');await options.locator('#target-date').fill('2026-10-24');await options.locator('#enabled').uncheck();await options.locator('#mode').selectOption('dry_run');await options.locator('#rule-form button[type=submit]').click();await options.waitForFunction(()=>document.querySelectorAll('.rule-item').length===2);
  s=await state();const saved=s.rules.find(x=>x.id!==r.id);assert.equal(saved.facilityId,'2');assert.equal(saved.location,'SPORTS - LG1');assert.equal(saved.fallbackSlots[0].id,'09:00');console.log('PASS no-code settings save facility, dates, priority and fallback');
  mode='closed';result=await command('SYNC_NATIVE',{categoryId:'3',facilityId:'2',facilityName:'Badminton Court 1',location:'SPORTS - LG1',targetDate:'2026-10-24'});assert.equal(result.ok,true,JSON.stringify(result));assert.equal(result.result.slots.length,0);assert.equal(result.result.slotSuggestions.length,14);await options.reload();await options.waitForFunction(()=>document.querySelector('#slot-catalog option[value="08:00"]'));assert.match(await options.locator('#slot-catalog option[value="08:00"]').textContent(),/预设时间/);await options.locator('#slot-catalog').selectOption('08:00');await options.locator('#add-slot').click();assert.match(await options.locator('#slots').innerText(),/08:00（预设开始时间）/);console.log('PASS closed booking period offers all preset start times before release');
+ for(const remembered of ['prepare','auto','dry_run']){
+  await options.locator('#mode').selectOption(remembered);
+  await options.waitForFunction(async mode=>(await chrome.runtime.sendMessage({type:'STATE'})).result.preferences.mode===mode,remembered);
+  await options.locator('#reset-rule').click();assert.equal(await options.locator('#mode').inputValue(),remembered);
+  await options.reload();await options.waitForFunction(mode=>document.getElementById('mode').value===mode,remembered);
+  assert.equal((await state()).rules.find(x=>x.id===r.id).mode,'auto');
+ }
+ console.log('PASS all execution modes persist immediately across reset and settings reopen without changing existing rules');
+ await options.locator('#mode').selectOption('auto');await options.waitForFunction(async()=>(await chrome.runtime.sendMessage({type:'STATE'})).result.preferences.mode==='auto');
+ await options.locator('#rule-list .rule-item').first().getByRole('button',{name:'Dry-run',exact:true}).click();
+ await options.waitForFunction(async()=>!(await chrome.runtime.sendMessage({type:'STATE'})).result.runs.some(r=>r.status==='RUNNING'),null,{timeout:60000});
+ assert.equal((await state()).preferences.mode,'auto');assert.equal(await options.locator('#mode').inputValue(),'auto');
+ console.log('PASS one-off Dry-run never changes remembered automatic mode');
  await options.screenshot({path:'artifacts/native-settings-desktop.png',fullPage:true});await options.setViewportSize({width:390,height:900});await options.screenshot({path:'artifacts/native-settings-mobile.png',fullPage:true});assert.equal(await options.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);console.log('PASS native mobile settings');
  console.log('NATIVE BROWSER TESTS PASSED');
 }finally{await ctx.close();}

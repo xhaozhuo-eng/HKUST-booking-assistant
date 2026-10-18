@@ -3,7 +3,7 @@ const DB='hkustExtensionV1';
 let queue=Promise.resolve();
 const serial=fn=>{const r=queue.then(fn);queue=r.catch(()=>{});return r;};
 const delay=ms=>new Promise(r=>setTimeout(r,ms));
-async function state(){return (await chrome.storage.local.get(DB))[DB]||{rules:[],profile:structuredClone(NATIVE_PROFILE),runs:[],ledger:{},catalog:null,recordingTab:null,plans:{}};}
+async function state(){const s=(await chrome.storage.local.get(DB))[DB]||{rules:[],profile:structuredClone(NATIVE_PROFILE),runs:[],ledger:{},catalog:null,recordingTab:null,plans:{}};const mode=s.preferences?.mode||s.rules.at(-1)?.mode;s.preferences={...s.preferences,mode:['dry_run','prepare','auto'].includes(mode)?mode:'dry_run'};return s;}
 const isNative=p=>p.version==='hkust_drupal_v1';
 const confirmationOf=(profile,row)=>isNative(profile)?row.confirmationNumber||row.confirmationInfo:row;
 async function auth(tabId,profile){
@@ -107,6 +107,12 @@ async function execute(ruleId,{scheduled=false,forceDry=false}={}){
   let tabId=null;const primary=new Set(rule.slots.map(x=>x.id));
   const candidates=[...rule.slots,...rule.fallbackSlots];let successes=0,primarySuccess=false;
   try{
+    // Bind the first authenticated account before deriving duplicate-prevention keys.
+    // A dry-run is optional; authentication and final booking review still run.
+    if(isNative(profile)&&!profile.accountHash){
+      const authTab=await openOfficial(profile.entryUrl);
+      try{await auth(authTab,profile);await save(s);}finally{await chrome.tabs.remove(authTab).catch(()=>{});}
+    }
     for(const slot of candidates){
       await cancelled(ruleId);
       if(!primary.has(slot.id)&&primarySuccess)break;
@@ -119,7 +125,6 @@ async function execute(ruleId,{scheduled=false,forceDry=false}={}){
           if(rule.attemptMode==='first_success')break;continue;
         }
         if(['SUBMITTING','UNKNOWN','CANCELLED'].includes(entry.status))throw new FlowError('MANUAL_ACTION_REQUIRED','相同预订存在未核实提交，本次不会重提；请在官方记录页核实后手动解除');
-        if(entry.status==='SLOT_UNAVAILABLE'){run.slots.push({slot:slot.label,status:'SLOT_UNAVAILABLE'});continue;}
       }
       if(mode==='auto'){
         const found=await records(profile,vars,rule);
@@ -217,11 +222,15 @@ chrome.runtime.onMessage.addListener((msg,sender,respond)=>{
     switch(msg.type){
       case 'STATE':return {...s,now:Date.now()};
       case 'CONTENT_READY':return {recording:s.recordingTab===sender.tab.id};
+      case 'SAVE_PREFERENCES':{
+        if(!['dry_run','prepare','auto'].includes(msg.mode))throw new FlowError('CONFIG_REQUIRED','执行模式无效');
+        s.preferences={...s.preferences,mode:msg.mode};await save(s);return s.preferences;
+      }
       case 'SAVE_RULE':{
         const r=validateRule(msg.rule);if(r.mode==='auto'&&!msg.authorized)throw new FlowError('CONFIG_REQUIRED','自动提交需要勾选本人账户授权');
         if(isNative(s.profile)&&(!r.categoryId||!r.location||[...r.slots,...r.fallbackSlots].some(x=>!/^\d{2}:\d{2}$/.test(x.id))))throw new FlowError('CONFIG_REQUIRED','请先同步并选择官网项目、场地和时段');
         r.id=r.id||crypto.randomUUID();r.updatedAt=new Date().toISOString();
-        s.rules=s.rules.filter(x=>x.id!==r.id).concat(r);await reschedule(s);return r;
+        s.preferences={...s.preferences,mode:r.mode};s.rules=s.rules.filter(x=>x.id!==r.id).concat(r);await reschedule(s);return r;
       }
       case 'DELETE_RULE':s.rules=s.rules.filter(r=>r.id!==msg.ruleId);await reschedule(s);return true;
       case 'TOGGLE_RULE':{const r=s.rules.find(x=>x.id===msg.ruleId);if(r)r.enabled=!r.enabled;await reschedule(s);return true;}

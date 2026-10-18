@@ -33,3 +33,24 @@ test('cancel bypasses job queue and stores a durable cancellation signal',async(
 test('changing page adapter invalidates prior verification',async()=>{
  const s=initial();s.profile.verified=true;const w=await makeWorker(s);await w.command({type:'SAVE_PROFILE',profile:s.profile});assert.equal(w.storage.hkustExtensionV1.profile.verified,false);
 });
+
+test('execution preference remembers all modes across worker restarts',async()=>{
+ let w=await makeWorker(initial());assert.equal((await w.command({type:'STATE'})).result.preferences.mode,'dry_run');
+ for(const mode of ['prepare','auto','dry_run']){
+  assert.equal((await w.command({type:'SAVE_PREFERENCES',mode})).ok,true);
+  w=await makeWorker(w.storage.hkustExtensionV1);assert.equal((await w.command({type:'STATE'})).result.preferences.mode,mode);
+ }
+ assert.equal((await w.command({type:'SAVE_PREFERENCES',mode:'invalid'})).ok,false);
+ assert.equal((await w.command({type:'STATE'})).result.preferences.mode,'dry_run');
+});
+test('mode preference migration preserves latest rule and never changes existing rules',async()=>{
+ const s=initial();s.rules=[{id:'old',mode:'dry_run'},{id:'latest',mode:'auto'}];const w=await makeWorker(s);
+ assert.equal((await w.command({type:'STATE'})).result.preferences.mode,'auto');
+ await w.command({type:'SAVE_PREFERENCES',mode:'prepare'});
+ assert.equal(w.storage.hkustExtensionV1.rules[0].mode,'dry_run');assert.equal(w.storage.hkustExtensionV1.rules[1].mode,'auto');
+});
+test('native automatic rules can be scheduled without successful dry-run',async()=>{
+ const s=initial();s.profile=structuredClone(core.NATIVE_PROFILE);const w=await makeWorker(s);
+ const rule={...structuredClone(core.DEFAULT_RULE),id:'no-dry-run',categoryId:'3',location:'SPORTS - LG1',facilityId:'2',facilityName:'Badminton Court 1',slots:[{id:'08:00',label:'08:00'}],mode:'auto'};
+ const result=await w.command({type:'SAVE_RULE',rule,authorized:true});assert.equal(result.ok,true);assert.equal(w.alarms.size,2);assert.equal(w.storage.hkustExtensionV1.profile.verified,false);assert.equal(w.storage.hkustExtensionV1.preferences.mode,'auto');
+});

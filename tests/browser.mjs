@@ -29,8 +29,9 @@ try{
   const r={...structuredClone(DEFAULT_RULE),id:'integration-rule',facilityId:'court-12',facilityName:'Badminton Court 12',slots:[{id:'1800',label:'18:00–19:00'}],enabled:false};
   assert.equal((await command('SAVE_RULE',{rule:r})).ok,true);
   let result=await command('EXECUTE',{ruleId:r.id,forceDry:true});assert.equal(result.result.status,'DRY_RUN_OK',JSON.stringify(result));assert.equal(submissions,0);console.log('PASS real content script dry-run never clicks submit');
+  await command('SAVE_PROFILE',{profile:p});assert.equal((await state()).profile.verified,false);
   r.mode='auto';assert.equal((await command('SAVE_RULE',{rule:r,authorized:true})).ok,true);
-  result=await command('EXECUTE',{ruleId:r.id});assert.equal(result.result.status,'SUCCEEDED',JSON.stringify(result));assert.equal(submissions,1);assert.equal(bookings.length,1);console.log('PASS automatic selection, review, submit, confirmation and post-submit records');
+  result=await command('EXECUTE',{ruleId:r.id});assert.equal(result.result.status,'SUCCEEDED',JSON.stringify(result));assert.equal(submissions,1);assert.equal(bookings.length,1);console.log('PASS automatic selection without prior verified dry-run, review, submit, confirmation and post-submit records');
   result=await command('EXECUTE',{ruleId:r.id});assert.equal(result.result.status,'SUCCEEDED');assert.equal(submissions,1);console.log('PASS repeated run does not submit twice');
   let s=await state();s.ledger={};await options.evaluate(s=>chrome.storage.local.set({hkustExtensionV1:s}),s);
   result=await command('EXECUTE',{ruleId:r.id});assert.equal(submissions,1);assert.equal(result.result.slots[0].status,'DUPLICATE');console.log('PASS official pre-submit records detect duplicate even without local lock');

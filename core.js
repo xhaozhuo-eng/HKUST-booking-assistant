@@ -97,7 +97,6 @@ export function validateProfile(p, auto=false) {
   if(!safeUrl(p.entryUrl)) throw new FlowError('CONFIG_REQUIRED','预订入口必须是官方 FBS 地址');
   if(p.version==='hkust_drupal_v1'){
     if(p.entryUrl!=='https://fbs.hkust.edu.hk/facilities'||p.records.url!=='https://fbs.hkust.edu.hk/bookings')throw new FlowError('CONFIG_REQUIRED','原生适配器仅支持当前 HKUST 新版网站');
-    if(auto&&(!p.verified||!p.accountHash))throw new FlowError('CONFIG_REQUIRED','请先检查登录并完成一次 dry-run');
     return;
   }
   for(const s of [...p.steps,...p.records.steps]) {
@@ -108,7 +107,6 @@ export function validateProfile(p, auto=false) {
   for(const variable of ['facility','date','slot']) if(!p.steps.some(s=>s.variable===variable)) throw new FlowError('CONFIG_REQUIRED',`录制流程缺少 ${variable} 变量`);
   if(auto) {
     if(!p.identity.trim()) throw new FlowError('CONFIG_REQUIRED','请设置本地账户标识以隔离重复预订键');
-    if(!p.verified) throw new FlowError('CONFIG_REQUIRED','请先完成 dry-run 并核对页面适配');
     if(!p.steps.some(s=>s.phase==='submit')) throw new FlowError('CONFIG_REQUIRED','缺少标记为提交的步骤');
     if(!p.success||!p.confirmationNumber||!p.records.url||!p.records.rows) throw new FlowError('CONFIG_REQUIRED','请绑定成功标记、确认编号和预订记录行');
     if(!safeUrl(p.records.url)) throw new FlowError('CONFIG_REQUIRED','记录页地址必须属于官方 FBS');

@@ -1,4 +1,4 @@
-# HKUST Booking Assistant
+# fkHKUST-booking-system
 
 An open-source browser extension that runs locally in Chrome or Edge and configures booking rules for the HKUST Sports Facility Booking System (FBS). It uses a session that you establish yourself in the browser; you do not give your password to the extension or a remote server.
 
@@ -8,7 +8,7 @@ An open-source browser extension that runs locally in Chrome or Edge and configu
 2. Enable Developer mode, choose **Load unpacked**, and select this folder (the folder should directly contain `manifest.json`).
 3. Open the extension settings and start HKUST sign-in. Complete sign-in and any MFA yourself on the official website.
 4. Sync the official facility list, then select a facility category, location, and venue. Configure the target date, preferred and fallback times, priority, and opening time.
-5. Run Dry-run first and verify the selected venue, date, and time. Dry-run stops before the final booking confirmation.
+5. Choose Dry-run, semi-automatic, or automatic mode and save the rule. Dry-run is optional: a closed booking period does not block scheduling or automatic execution. Automatic mode checks the live account, venue, date, time, and confirmation dialog at execution time.
 6. Only after checking the applicable HKUST rules and understanding the risks, choose automatic mode, authorize actions for your own account, and enable the task.
 7. Keep the browser open, the computer awake, and the network available. If authentication expires or the site presents CAPTCHA/MFA, an unknown page, or an uncertain result, the extension stops for manual handling.
 
@@ -54,3 +54,11 @@ Browser integration tests use mock pages. They do not sign into or submit bookin
 ## License
 
 Project code is released under the MIT License included in this repository. This license does not grant rights to HKUST trademarks, website content, or third-party dependencies.
+
+## v0.1 and upgrade notes
+
+The product and repository are named fkHKUST-booking-system starting with v0.1. Previous tags, commits, and release assets retain their original names. The release tag is v0.1; the numeric extension version is 0.1.0 and its display version is 0.1.
+
+Your execution-mode selection is saved immediately and restored after resetting the form, reopening settings, or restarting the browser. Existing rules keep their own saved mode. A one-off Dry-run does not change the preference. Automatic rules still require your own-account authorization. Dry-run and semi-automatic modes never submit the final confirmation.
+
+When upgrading an unpacked extension, replace the contents of the folder already loaded in the browser, then click Reload in the extensions page. Keep that folder path and browser profile to preserve local settings. Because v0.1 starts a new version series below 0.10.18, use this manual unpacked-installation process; do not remove the extension or clear its storage. An old enabled rule saved as Dry-run remains Dry-run until you edit and save that rule with the desired mode.
