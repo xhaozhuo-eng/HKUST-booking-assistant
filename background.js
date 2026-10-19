@@ -17,17 +17,18 @@ async function notice(title,message){await chrome.notifications.create({type:'ba
 async function log(s,data){const run={id:crypto.randomUUID(),createdAt:new Date().toISOString(),...data};s.runs.unshift(run);s.runs=s.runs.slice(0,300);await save(s);return run;}
 async function page(tabId,message){
   try {const response=await chrome.tabs.sendMessage(tabId,message);if(!response?.ok)throw new FlowError(response?.code||'PAGE_CHANGED',response?.error||'页面适配器无响应');return response.result;}
-  catch(e){if(e instanceof FlowError)throw e;throw new FlowError('PAGE_CHANGED','无法连接页面。请等待加载或刷新官方页面后重试');}
+  catch(e){if(e instanceof FlowError)throw e;throw new FlowError('NETWORK_ERROR','暂时无法连接官网页面，尚未取得响应');}
 }
 async function ready(tabId){
   for(let i=0;i<40;i++){
     const tab=await chrome.tabs.get(tabId).catch(()=>null);
     if(!tab)throw new FlowError('CANCELLED','预订标签页已被关闭');
     if(tab.url==='about:blank'||tab.pendingUrl){await delay(350);continue;}
-    if(tab.status==='complete'){
-      if(!safeUrl(tab.url))throw new FlowError('AUTH_REQUIRED','已转到 CAS/认证页面，请在浏览器中手动完成登录');
+    // Images or analytics may keep a usable page loading. The content-script handshake
+    // is the readiness signal; individual booking controls are checked by the adapter.
+    if(safeUrl(tab.url)){
       try{await page(tabId,{type:'PING'});return;}catch(e){if(i===39)throw e;}
-    }
+    }else if(tab.status==='complete')throw new FlowError('AUTH_REQUIRED','已转到 CAS/认证页面，请在浏览器中手动完成登录');
     await delay(350);
   }
   throw new FlowError('NETWORK_ERROR','页面加载超时，尚未确认结果');
@@ -35,7 +36,7 @@ async function ready(tabId){
 async function openOfficial(url,active=false){
   if(!safeUrl(url))throw new FlowError('CONFIG_REQUIRED','只允许 HKUST FBS 官方预订地址');
   const tab=await chrome.tabs.create({url:'about:blank',active});
-  await delay(120);await chrome.tabs.update(tab.id,{url});await ready(tab.id);return tab.id;
+  try{await delay(120);await chrome.tabs.update(tab.id,{url});await ready(tab.id);return tab.id;}catch(e){await chrome.tabs.remove(tab.id).catch(()=>{});throw e;}
 }
 async function targetTab(s,create=false){
   if(s.recordingTab){const t=await chrome.tabs.get(s.recordingTab).catch(()=>null);if(t&&safeUrl(t.url))return t.id;}
@@ -44,16 +45,76 @@ async function targetTab(s,create=false){
   if(create)return openOfficial(s.profile.entryUrl,true);
   throw new FlowError('CONFIG_REQUIRED','先打开并登录官方预订页面');
 }
-async function reschedule(s){
-  const existing=await chrome.alarms.getAll();
-  for(const a of existing)if(a.name.startsWith('hkust:'))await chrome.alarms.clear(a.name);
-  s.plans={};
-  for(const rule of s.rules.filter(r=>r.enabled)){
-    const plan=nextPlan(rule);if(!plan)continue;s.plans[rule.id]=plan;
-    await chrome.alarms.create(`hkust:pre:${rule.id}`,{when:Math.max(Date.now()+1000,plan.precheckAt)});
-    await chrome.alarms.create(`hkust:run:${rule.id}`,{when:plan.submitAt});
+const retryWindow=rule=>(rule.retryWindowSeconds??600)*1000;
+async function cancelRetry(s,id){
+  if(s.retryJobs)delete s.retryJobs[id];
+  await chrome.alarms.clear('hkust:retry:'+id);
+}
+async function scheduleRule(s,rule){
+  for(const kind of ['pre','run'])await chrome.alarms.clear('hkust:'+kind+':'+rule.id);
+  s.plans||={};delete s.plans[rule.id];
+  if(!rule.enabled)return;
+  const plan=nextPlan(rule);if(!plan)return;s.plans[rule.id]=plan;
+  await chrome.alarms.create('hkust:pre:'+rule.id,{when:Math.max(Date.now()+1000,plan.precheckAt)});
+  await chrome.alarms.create('hkust:run:'+rule.id,{when:plan.submitAt});
+}
+async function restoreRetries(s){
+  for(const [id,job]of Object.entries(s.retryJobs||{})){
+    if(!s.rules.some(r=>r.id===id&&r.enabled)||job.deadline<=Date.now()){await cancelRetry(s,id);continue;}
+    await chrome.alarms.create('hkust:retry:'+id,{when:Math.max(Date.now()+1000,job.nextAt||Date.now())});
   }
+}
+async function reschedule(s){
+  for(const alarm of await chrome.alarms.getAll())if(alarm.name.startsWith('hkust:'))await chrome.alarms.clear(alarm.name);
+  s.plans={};
+  for(const rule of s.rules)await scheduleRule(s,rule);
+  await restoreRetries(s);
   await save(s);
+}
+function retryable(run,rule){
+  return ['NETWORK_ERROR','PAGE_NOT_READY','SLOT_UNAVAILABLE'].includes(run?.status)||
+    run?.status==='SUCCEEDED'&&rule.attemptMode==='all'&&run.slots?.some(x=>x.status==='SLOT_UNAVAILABLE');
+}
+async function runScheduled(id,{plan,retry=false}={}){
+  let s=await state();const rule=s.rules.find(r=>r.id===id);
+  if(!rule?.enabled){await cancelRetry(s,id);await save(s);return;}
+  let job=s.retryJobs?.[id];
+  if(retry&&!job)return;
+  if(retry&&(await chrome.storage.local.get('cancel:'+id))['cancel:'+id]){
+    await cancelRetry(s,id);await log(s,{ruleId:id,status:'CANCELLED',stage:'retry',targetDate:job.plan.targetDate,message:'已取消本次后续重试'});return;
+  }
+  if(!job){
+    plan=plan||s.plans[id];
+    if(!plan)return;
+    // Never substitute tomorrow's target for a delayed alarm from today.
+    if(plan.submitAt>Date.now()+1000)return;
+    job={plan:structuredClone(plan),attempt:0,deadline:plan.submitAt+Math.max(retryWindow(rule),rule.maxLateSeconds*1000)};
+  }
+  if(Date.now()>job.deadline){
+    await cancelRetry(s,id);
+    await log(s,{ruleId:id,status:'RETRY_EXHAUSTED',stage:'schedule',targetDate:job.plan.targetDate,message:'已超过本次连续尝试窗口，未自动补订或改订其他日期'});
+    await scheduleRule(s,rule);await save(s);return;
+  }
+  job.attempt++;job.nextAt=null;s.retryJobs={...s.retryJobs,[id]:job};await save(s);
+  let run;
+  try{run=await execute(id,{scheduled:true,plan:job.plan,deadline:job.deadline,attempt:job.attempt});}
+  catch(e){s=await state();run=await log(s,{ruleId:id,status:e.code||'FAILED',stage:'prepare',targetDate:job.plan.targetDate,message:redact(e.message)});}
+  s=await state();
+  const nextAt=Date.now()+(rule.retryIntervalSeconds??10)*1000;
+  const again=retryWindow(rule)>0&&retryable(run,rule)&&nextAt<job.deadline;
+  if(again){
+    job.nextAt=nextAt;s.retryJobs={...s.retryJobs,[id]:job};
+    const saved=s.runs.find(r=>r.id===run.id);
+    if(saved){saved.retryAt=nextAt;saved.retryDeadline=job.deadline;saved.attempt=job.attempt;}
+    await chrome.alarms.create('hkust:retry:'+id,{when:nextAt});
+  }else{
+    await cancelRetry(s,id);
+    if(run){const saved=s.runs.find(r=>r.id===run.id);if(saved&&retryable(run,rule)&&retryWindow(rule)>0)saved.retryExhausted=true;}
+  }
+  // Advance this rule only. Other rules queued at the same opening keep their original plan.
+  if(!retry)await scheduleRule(s,rule);
+  await save(s);
+  if(!again&&run)await notice('HKUST：'+run.status,rule.facilityName+' · '+job.plan.targetDate+' · '+run.message);
 }
 async function cancelled(ruleId){if((await chrome.storage.local.get(`cancel:${ruleId}`))[`cancel:${ruleId}`])throw new FlowError('CANCELLED','任务已被你取消');}
 async function stepFlow(tabId,steps,vars,auth,ruleId,allowSubmit=false,stageHook=null){
@@ -85,25 +146,26 @@ async function precheck(ruleId){
     validateProfile(s.profile,false);
     const tabId=await openOfficial(s.profile.entryUrl);
     await auth(tabId,s.profile);
-    s.prepared={...s.prepared,[ruleId]:tabId};
+    s.authCheckedAt=new Date().toISOString();s.prepared={...s.prepared,[ruleId]:tabId};
     await log(s,{ruleId,facilityName:rule.facilityName,targetDate:plan.targetDate,status:'PRECHECK_OK',stage:'precheck',message:'登录态有效；将在开放时间执行。浏览器须保持运行、电脑须保持唤醒。'});
   }catch(e){await log(s,{ruleId,status:e.code||'PAGE_CHANGED',stage:'precheck',targetDate:plan.targetDate,message:redact(e.message)});await notice('HKUST 晚间/开放前检查需要处理',e.message);}
 }
-async function execute(ruleId,{scheduled=false,forceDry=false}={}){
+async function execute(ruleId,{scheduled=false,forceDry=false,plan:executionPlan=null,deadline=null,attempt=1}={}){
   const s=await state(),rule=s.rules.find(r=>r.id===ruleId);
   if(!rule)throw new FlowError('CONFIG_REQUIRED','规则不存在');
   if(scheduled&&!rule.enabled)return;
   const mode=forceDry?'dry_run':rule.mode,profile=s.profile;
   validateRule(rule);validateProfile(profile,mode==='auto');
   if((rule.userType==='family_card')!==(new URL(profile.entryUrl).hostname==='w5.ab.ust.hk'))throw new FlowError('CONFIG_REQUIRED','用户类型与已录制入口不一致；请先为所选用户类型录制对应官方页面');
-  const plan=scheduled?s.plans[ruleId]:null;
-  if(scheduled&&(!plan||Date.now()-plan.submitAt>rule.maxLateSeconds*1000)){
-    await log(s,{ruleId,status:'MANUAL_ACTION_REQUIRED',stage:'schedule',message:'浏览器唤醒过晚，超过允许延迟；本次未提交，请人工检查'});return;
+  const plan=scheduled?(executionPlan||s.plans[ruleId]):null;
+  if(scheduled&&plan)deadline=deadline??plan.submitAt+rule.maxLateSeconds*1000;
+  if(scheduled&&(!plan||Date.now()>(deadline??plan.submitAt+rule.maxLateSeconds*1000))){
+    await log(s,{ruleId,status:'MANUAL_ACTION_REQUIRED',stage:'schedule',message:'任务启动已超过允许执行窗口，本次未提交，请人工检查'});return;
   }
   const targetDate=plan?.targetDate||dateFor(rule,localDay(Date.now(),rule.timezone));
   if(!targetDate){await log(s,{ruleId,status:'SKIPPED',stage:'date',message:'今天不符合重复规则'});return;}
-  await chrome.storage.local.remove(`cancel:${ruleId}`);
-  const run=await log(s,{ruleId,status:'RUNNING',stage:'prepare',startedAt:new Date().toISOString(),facilityId:rule.facilityId,facilityName:rule.facilityName,targetDate,mode,timezone:rule.timezone,slots:[],message:'开始执行'});
+  if(attempt===1)await chrome.storage.local.remove(`cancel:${ruleId}`);else await cancelled(ruleId);
+  const run=await log(s,{ruleId,status:'RUNNING',stage:'prepare',startedAt:new Date().toISOString(),facilityId:rule.facilityId,facilityName:rule.facilityName,targetDate,mode,attempt,timezone:rule.timezone,slots:[],message:'开始执行'});
   let tabId=null;const primary=new Set(rule.slots.map(x=>x.id));
   const candidates=[...rule.slots,...rule.fallbackSlots];let successes=0,primarySuccess=false;
   try{
@@ -116,6 +178,7 @@ async function execute(ruleId,{scheduled=false,forceDry=false}={}){
     for(const slot of candidates){
       await cancelled(ruleId);
       if(!primary.has(slot.id)&&primarySuccess)break;
+      if(scheduled&&Date.now()>deadline)throw new FlowError('RETRY_EXHAUSTED','本次连续尝试窗口已结束，未继续选择或提交');
       const vars={facilityId:rule.facilityId,facilityName:rule.facilityName,categoryId:rule.categoryId,location:rule.location,targetDate,formattedDate:formatDate(targetDate,profile.dateFormat),slot};
       const key=keyFor(profile.accountHash||profile.identity,rule,targetDate,slot);
       if(mode==='auto'&&s.ledger[key]){
@@ -142,6 +205,7 @@ async function execute(ruleId,{scheduled=false,forceDry=false}={}){
         let crossed=false;
         const markSubmitting=async()=>{
           // Write-ahead marker: a browser/worker crash from here never permits an automatic repeat.
+          if(scheduled&&Date.now()>deadline)throw new FlowError('RETRY_EXHAUSTED','本次连续尝试窗口已结束，未发出提交');
           crossed=true;s.ledger[key]={status:'SUBMITTING',runId:run.id,at:new Date().toISOString()};run.stage='submit';await save(s);
         };
         let nativeDetails=null;
@@ -177,7 +241,7 @@ async function execute(ruleId,{scheduled=false,forceDry=false}={}){
         }
         if(e.code==='SLOT_UNAVAILABLE'){
           if(mode==='auto')s.ledger[key]={status:'SLOT_UNAVAILABLE',at:new Date().toISOString()};
-          run.slots.push({slot:slot.label,status:'SLOT_UNAVAILABLE',message:e.message});await save(s);continue;
+          run.slots.push({slot:slot.label,status:'SLOT_UNAVAILABLE',message:e.message});await save(s);if(tabId){await chrome.tabs.remove(tabId).catch(()=>{});tabId=null;}continue;
         }
         throw e;
       }
@@ -186,26 +250,32 @@ async function execute(ruleId,{scheduled=false,forceDry=false}={}){
     run.message=mode==='auto'?`已确认 ${successes} 个预订/已有记录`:(mode==='dry_run'?'页面配置校验完成，没有提交':'页面已准备好，等待你手动提交');
     if(forceDry&&run.status==='DRY_RUN_OK'){s.profile.verified=true;s.profile.verifiedAt=new Date().toISOString();}
   }catch(e){run.status=e.code||'PAGE_CHANGED';run.message=redact(e.message);}
+  if(scheduled&&['NETWORK_ERROR','PAGE_NOT_READY','SLOT_UNAVAILABLE'].includes(run.status)&&tabId)await chrome.tabs.remove(tabId).catch(()=>{});
   run.finishedAt=new Date().toISOString();await save(s);
-  await notice(`HKUST：${run.status}`,`${rule.facilityName} · ${targetDate} · ${run.message}`);
+  if(!scheduled)await notice(`HKUST：${run.status}`,`${rule.facilityName} · ${targetDate} · ${run.message}`);
   return run;
 }
 async function recover(rebuild=true){
   const s=await state();
   for(const run of s.runs.filter(r=>r.status==='RUNNING')){run.status='MANUAL_ACTION_REQUIRED';run.message='浏览器或扩展已重启，未完成运行需要人工核验，未自动重新提交';run.finishedAt=new Date().toISOString();}
   for(const [key,entry]of Object.entries(s.ledger))if(entry.status==='SUBMITTING')s.ledger[key]={...entry,status:'UNKNOWN'};
-  if(rebuild)await reschedule(s);else await save(s);
+  if(rebuild)await reschedule(s);else{await restoreRetries(s);await save(s);}
 }
 chrome.runtime.onInstalled.addListener(()=>serial(recover));
 chrome.runtime.onStartup.addListener(()=>serial(recover));
 chrome.action.onClicked.addListener(()=>chrome.runtime.openOptionsPage());
 chrome.alarms.onAlarm.addListener(alarm=>{
   if(!alarm.name.startsWith('hkust:'))return;
+  // Capture at delivery, before waiting behind another booking in the serial queue.
+  const snapshot=state();
   serial(async()=>{
     const [,kind,id]=alarm.name.split(':');
-    try{if(kind==='pre')await precheck(id);else await execute(id,{scheduled:true});}
-    catch(e){const s=await state();await log(s,{ruleId:id,status:e.code||'FAILED',message:redact(e.message),stage:kind});await notice('HKUST 任务需要处理',e.message);}
-    if(kind==='run')await reschedule(await state());
+    try{
+      const captured=await snapshot;
+      if(kind==='pre')await precheck(id);
+      else if(kind==='run')await runScheduled(id,{plan:captured.plans[id]});
+      else if(kind==='retry')await runScheduled(id,{retry:true});
+    }catch(e){const s=await state();await log(s,{ruleId:id,status:e.code||'FAILED',message:redact(e.message),stage:kind});await notice('HKUST 任务需要处理',e.message);}
   });
 });
 const internal=new Set(['CONTENT_READY','PICK_RESULT','RECORD_STEP','RECORD_BLOCKED']);
@@ -230,10 +300,10 @@ chrome.runtime.onMessage.addListener((msg,sender,respond)=>{
         const r=validateRule(msg.rule);if(r.mode==='auto'&&!msg.authorized)throw new FlowError('CONFIG_REQUIRED','自动提交需要勾选本人账户授权');
         if(isNative(s.profile)&&(!r.categoryId||!r.location||[...r.slots,...r.fallbackSlots].some(x=>!/^\d{2}:\d{2}$/.test(x.id))))throw new FlowError('CONFIG_REQUIRED','请先同步并选择官网项目、场地和时段');
         r.id=r.id||crypto.randomUUID();r.updatedAt=new Date().toISOString();
-        s.preferences={...s.preferences,mode:r.mode};s.rules=s.rules.filter(x=>x.id!==r.id).concat(r);await reschedule(s);return r;
+        await cancelRetry(s,r.id);s.preferences={...s.preferences,mode:r.mode};s.rules=s.rules.filter(x=>x.id!==r.id).concat(r);await reschedule(s);return r;
       }
-      case 'DELETE_RULE':s.rules=s.rules.filter(r=>r.id!==msg.ruleId);await reschedule(s);return true;
-      case 'TOGGLE_RULE':{const r=s.rules.find(x=>x.id===msg.ruleId);if(r)r.enabled=!r.enabled;await reschedule(s);return true;}
+      case 'DELETE_RULE':await cancelRetry(s,msg.ruleId);s.rules=s.rules.filter(r=>r.id!==msg.ruleId);await reschedule(s);return true;
+      case 'TOGGLE_RULE':{const r=s.rules.find(x=>x.id===msg.ruleId);if(r){r.enabled=!r.enabled;if(!r.enabled)await cancelRetry(s,r.id);}await reschedule(s);return true;}
       case 'SAVE_PROFILE':{
         if(!safeUrl(msg.profile.entryUrl)||msg.profile.records.url&&!safeUrl(msg.profile.records.url))throw new FlowError('CONFIG_REQUIRED','页面地址必须属于 HKUST FBS');
         s.profile={...msg.profile,verified:false};await save(s);return true;
@@ -286,7 +356,7 @@ chrome.runtime.onMessage.addListener((msg,sender,respond)=>{
         }else if(['authenticated','success','confirmationNumber'].includes(msg.key))s.profile[msg.key]=msg.locator;
         s.profile.verified=false;s.pickKey=null;await save(s);await notice('已保存页面绑定',msg.key);return true;
       }
-      case 'EXECUTE':return execute(msg.ruleId,{forceDry:!!msg.forceDry});
+      case 'EXECUTE':await cancelRetry(s,msg.ruleId);await save(s);return execute(msg.ruleId,{forceDry:!!msg.forceDry});
       case 'UNLOCK':{
         const entry=s.ledger[msg.key];if(!entry)throw new FlowError('CONFIG_REQUIRED','找不到记录');
         if(msg.confirmedBooked)entry.status='DUPLICATE';else delete s.ledger[msg.key];await log(s,{status:'MANUAL_RECONCILIATION',stage:'reconcile',message:msg.confirmedBooked?'用户核实官方已有预订':'用户核实官方无预订，解除不确定锁'});return true;

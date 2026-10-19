@@ -25,7 +25,7 @@ globalThis.HKUSTNative = ({guard,fail}) => {
         if(Date.now()-began>1000&&!busy&&Date.now()-last>650&&expected())return;
         await pause(180);
       }while(Date.now()-began<35000);
-      fail('NETWORK_ERROR',`官网响应超时；已停止当前操作，没有自动重复提交（${phase}）`);
+      fail('NETWORK_ERROR',`官网页面等待超时，未确认此步骤已完成（${phase}）`);
   }
   async function authenticate(expected){
     guard();
@@ -49,7 +49,7 @@ globalThis.HKUSTNative = ({guard,fail}) => {
   }
   async function choose(name,value){
     const e=one(name);const o=[...e.options].find(o=>o.value===String(value)&&!o.disabled);
-    if(!o)fail('PAGE_CHANGED','官网已没有所选设施或分类，请重新同步');
+    if(!o)fail('PAGE_NOT_READY','官网暂未返回所选设施或分类，将刷新页面重新读取');
     if(e.value===o.value)return;
     e.value=o.value;e.dispatchEvent(new Event('change',{bubbles:true}));
     await settled(()=>named(name).some(x=>x.value===String(value)),`filter:${name}`);await notices();
@@ -116,17 +116,17 @@ globalThis.HKUSTNative = ({guard,fail}) => {
     if(slot.disabled)fail('SLOT_UNAVAILABLE','目标时段已满或暂未开放');
     const label=[...(slot.labels||[])].find(visible);
     if(label)label.click();else if(visible(slot))slot.click();else fail('PAGE_CHANGED','官网时段控件已变化');
-    await settled();selection(vars);
+    await settled(()=>true,'slot-selection');selection(vars);
     const reserve=named('op').filter(e=>visible(e)&&e.value==='Reserve'&&!e.disabled);
     if(reserve.length!==1)fail('PAGE_CHANGED','官网缺少打开预订确认页的 Reserve 按钮');
-    uiClick(reserve[0]);await settled(()=>!!dialog());
+    uiClick(reserve[0]);await settled(()=>!!dialog(),'confirmation-dialog');
     const details=review(vars);prepared=JSON.stringify(vars);return {ok:true,details};
   }
   async function submit(vars){
     if(prepared!==JSON.stringify(vars))fail('DATE_MISMATCH','本页未完成该规则的预订前检查');
     const details=review(vars);prepared=null;
     dialog().querySelector('.ui-dialog-buttonpane button.modal-confirm').click();
-    await settled();return {ok:true,details};
+    await settled(()=>true,'after-submit');return {ok:true,details};
   }
   function records(vars){
     guard();

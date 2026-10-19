@@ -62,3 +62,11 @@ The product and repository are named fkHKUST-booking-system starting with v0.1. 
 Your execution-mode selection is saved immediately and restored after resetting the form, reopening settings, or restarting the browser. Existing rules keep their own saved mode. A one-off Dry-run does not change the preference. Automatic rules still require your own-account authorization. Dry-run and semi-automatic modes never submit the final confirmation.
 
 When upgrading an unpacked extension, replace the contents of the folder already loaded in the browser, then click Reload in the extensions page. Keep that folder path and browser profile to preserve local settings. Because v0.1 starts a new version series below 0.10.18, use this manual unpacked-installation process; do not remove the extension or clear its storage. An old enabled rule saved as Dry-run remains Dry-run until you edit and save that rule with the desired mode.
+
+## v0.1.1: continuous attempts
+
+Scheduled rules retry transient preparation timeouts, missing facility options, and unavailable periods within ten minutes of the original opening by default. The default interval is ten seconds after each failed attempt, subject to browser alarm and queue delays. Configure the window (0–60 minutes; 0 disables retry) and interval (5–300 seconds) in Execution settings. Existing rules inherit these defaults without being recreated. Every attempt keeps the original execution date and target date. A successful rule advances only its own next schedule, preserving other rules queued at the same opening.
+
+Retry jobs survive worker/browser restarts within the original deadline. Cancel, pause, delete, or edit a rule to clear its pending retries. Authentication challenges, mismatched confirmation details, and uncertain submissions stop for manual handling. An uncertain submission is reconciled against official records and locked, never blindly repeated. Immediate-execution and one-off Dry-run buttons remain single attempts.
+
+The session card shows the last actual successful check rather than treating fifteen elapsed minutes as proof of session expiry. Page readiness uses the extension handshake instead of waiting for unrelated resources to finish loading.

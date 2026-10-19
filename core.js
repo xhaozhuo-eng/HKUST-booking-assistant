@@ -3,7 +3,7 @@ export const DEFAULT_RULE = {
   weekday: 5, startDate: '', endDate: '', intervalWeeks: 1, offsetDays: 7,
   timezone: 'Asia/Hong_Kong', openingTime: '08:00:00', precheckSeconds: 30,
   slots: [], fallbackSlots: [], attemptMode: 'first_success', enabled: true, mode: 'dry_run',
-  userType: 'student_staff_alumni', maxLateSeconds: 45
+  userType: 'student_staff_alumni', maxLateSeconds: 45, retryWindowSeconds: 600, retryIntervalSeconds: 10
 };
 export const DEFAULT_PROFILE = {
   version: 'hkust_recorded_v1', entryUrl: 'https://fbs.hkust.edu.hk/facilities',
@@ -87,6 +87,8 @@ export function validateRule(rule) {
   if(rule.precheckSeconds<5||rule.precheckSeconds>3600) throw new FlowError('CONFIG_REQUIRED','预检查提前量应为 5–3600 秒');
   if(rule.startDate&&!validDay(rule.startDate)||rule.endDate&&!validDay(rule.endDate)) throw new FlowError('INVALID_DATE','重复范围日期无效');
   if(rule.startDate&&rule.endDate&&rule.startDate>rule.endDate) throw new FlowError('INVALID_DATE','开始日期不能晚于结束日期');
+  if(!Number.isInteger(rule.retryWindowSeconds??600)||(rule.retryWindowSeconds??600)<0||(rule.retryWindowSeconds??600)>3600) throw new FlowError('CONFIG_REQUIRED','连续重试时长应为 0–3600 秒');
+  if(!Number.isInteger(rule.retryIntervalSeconds??10)||(rule.retryIntervalSeconds??10)<5||(rule.retryIntervalSeconds??10)>300) throw new FlowError('CONFIG_REQUIRED','重试间隔应为 5–300 秒');
   new Intl.DateTimeFormat('en',{timeZone:rule.timezone});
   if(rule.dateMode==='fixed_date'&&!validDay(rule.targetDate)) throw new FlowError('INVALID_DATE','请选择固定日期');
   const ids=[...rule.slots,...rule.fallbackSlots].map(s=>s.id);

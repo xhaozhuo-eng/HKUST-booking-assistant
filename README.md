@@ -7,4 +7,4 @@ Local browser extension for the HKUST Sports Facility Booking System. Read the g
 
 This is an independent, community project. It is not affiliated with or endorsed by HKUST. Read the applicable website terms before enabling automation. The authenticated “Notes for users” page was not available for independent review during packaging.
 
-Current release: **v0.1**. Dry-run is optional; execution mode is remembered. Existing rule modes and older releases are preserved.
+Current release: **v0.1.1**. Scheduled rules retry transient preparation failures within a configurable window while keeping their original target date. Dry-run is optional; execution mode is remembered. Existing rule modes and older releases are preserved.

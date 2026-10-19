@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {chromium} from '@playwright/test';
 import {resolve} from 'node:path';
 import {NATIVE_PROFILE,DEFAULT_RULE} from '../core.js';
-let bookings=[],submissions=0,mode='normal';
+let bookings=[],submissions=0,mode='normal',transientFailures=0;
 const headers=['Facility Type','Facility','Location','Date','Time','Action'];
 const records=()=>`<html><body><header>tester@connect.ust.hk <a href="/user/logout">Logout</a></header><table><thead><tr>${headers.map(x=>`<th>${x}</th>`).join('')}</tr></thead><tbody>${bookings.length?bookings.map(b=>`<tr><td>Badminton</td><td>${b.facility}</td><td>${b.location}</td><td>${b.date}</td><td>${b.time}</td><td><a href="/bookings/${b.id}">Details</a></td></tr>`).join(''):`<tr><td colspan="6">You've no upcoming bookings.</td></tr>`}</tbody></table></body></html>`;
 const facilities=()=>`<!doctype html><html><body><header>${mode==='other-account'?'other':'tester'}@connect.ust.hk <a href="/user/logout">Logout</a></header><main><div id="carousel"></div><div id="filters"></div><div id="selection"></div></main><div id="modal"></div><script>
@@ -20,7 +20,7 @@ form();setInterval(()=>document.getElementById('carousel').replaceChildren(docum
 </script></body></html>`;
 const root=resolve('.');const ctx=await chromium.launchPersistentContext(resolve('artifacts/native-test-profile-'+Date.now()),{executablePath:process.env.TEST_BROWSER_PATH||undefined,headless:true,args:[`--disable-extensions-except=${root}`,`--load-extension=${root}`],viewport:{width:1440,height:1100}});
 try{
- await ctx.route('https://fbs.hkust.edu.hk/**',async route=>{const path=new URL(route.request().url()).pathname;if(path==='/mock-submit'){submissions++;const b=route.request().postDataJSON();bookings.push({...b,id:'NATIVE-'+submissions});return route.fulfill({json:{ok:true}});}await route.fulfill({contentType:'text/html',body:path==='/bookings'?records():facilities()});});
+ await ctx.route('https://fbs.hkust.edu.hk/**',async route=>{const path=new URL(route.request().url()).pathname;if(path==='/mock-submit'){submissions++;const b=route.request().postDataJSON();bookings.push({...b,id:'NATIVE-'+submissions});return route.fulfill({json:{ok:true}});}let html=path==='/bookings'?records():facilities();if(path==='/facilities'&&transientFailures>0){transientFailures--;html=html.replace('<option value="3">Badminton</option>','');}await route.fulfill({contentType:'text/html',body:html});});
  const worker=ctx.serviceWorkers()[0]||await ctx.waitForEvent('serviceworker');const id=new URL(worker.url()).host;
  const options=await ctx.newPage();await options.goto(`chrome-extension://${id}/options.html`);
  const command=(type,data={})=>options.evaluate(args=>chrome.runtime.sendMessage(args),{type,...data});
@@ -41,6 +41,16 @@ try{
  mode='normal';await options.evaluate(async s=>{await chrome.storage.local.set({hkustExtensionV1:s});await chrome.alarms.create('hkust:run:native-test',{when:s.plans['native-test'].submitAt});},fresh);
  let alarmRun;const alarmDeadline=Date.now()+60000;while(Date.now()<alarmDeadline){await new Promise(r=>setTimeout(r,500));alarmRun=(await state()).runs.find(x=>!beforeAlarmIds.includes(x.id)&&x.mode==='auto'&&x.status!=='RUNNING');if(alarmRun)break;}assert.ok(alarmRun,JSON.stringify((await state()).runs.map(x=>({id:x.id,status:x.status,mode:x.mode,message:x.message}))));assert.equal(alarmRun.status,'SUCCEEDED',JSON.stringify(alarmRun));
  assert.equal(submissions,1);assert.equal((await state()).profile.verified,false);console.log('PASS closed-period dry-run failure never blocks scheduled automatic execution at opening');
+ bookings=[];submissions=0;fresh=await state();fresh.ledger={};fresh.retryJobs={};fresh.runs=[];await options.evaluate(s=>chrome.storage.local.set({hkustExtensionV1:s}),fresh);
+ r.enabled=true;r.mode='auto';r.retryIntervalSeconds=5;await command('SAVE_RULE',{rule:r,authorized:true});
+ fresh=await state();fresh.plans[r.id]={targetDate:r.targetDate,submitAt:Date.now()+1000};transientFailures=1;
+ await options.evaluate(async s=>{await chrome.storage.local.set({hkustExtensionV1:s});await chrome.alarms.create('hkust:run:native-test',{when:s.plans['native-test'].submitAt});},fresh);
+ let failedState;for(let i=0;i<60;i++){await new Promise(r=>setTimeout(r,250));failedState=await state();if(failedState.retryJobs?.[r.id]?.nextAt)break;}
+ assert.equal(failedState.runs[0].status,'PAGE_NOT_READY',JSON.stringify(failedState.runs));assert.equal(submissions,0);assert.equal(failedState.retryJobs[r.id].plan.targetDate,r.targetDate);assert.ok(failedState.runs[0].retryAt);
+ await options.reload();assert.equal((await state()).retryJobs[r.id].plan.targetDate,r.targetDate);
+ let recovered;for(let i=0;i<140;i++){await new Promise(r=>setTimeout(r,500));recovered=await state();if(recovered.runs.some(x=>x.status==='SUCCEEDED'&&x.attempt===2))break;}
+ assert.ok(recovered.runs.some(x=>x.status==='SUCCEEDED'&&x.attempt===2),JSON.stringify(recovered.runs));assert.equal(submissions,1);assert.equal(bookings[0].date,r.targetDate);assert.equal(recovered.retryJobs[r.id],undefined);
+ console.log('PASS transient missing facility options retry automatically with fixed date and exactly one final submission');
  bookings=[];submissions=0;fresh=await state();fresh.ledger={};fresh.profile=structuredClone(NATIVE_PROFILE);await options.evaluate(s=>chrome.storage.local.set({hkustExtensionV1:s}),fresh);
  r.mode='dry_run';r.enabled=false;await command('SAVE_RULE',{rule:r});
  let result=await command('EXECUTE',{ruleId:r.id,forceDry:true});assert.equal(result.result.status,'DRY_RUN_OK',JSON.stringify(result));assert.equal(submissions,0);assert.equal(result.result.slots[0].details.time,'08:00 - 09:00');console.log('PASS native mousedown, dynamic IDs, hidden radio, animated carousel and confirmation dry-run');
@@ -53,7 +63,7 @@ try{
 mode='normal';result=await command('SYNC_NATIVE',{categoryId:'3',facilityId:'2',facilityName:'Badminton Court 1',location:'SPORTS - LG1',targetDate:'2026-10-24'});assert.equal(result.ok,true,JSON.stringify(result));assert.equal(result.result.facilities.length,2);assert.equal(result.result.slots.length,2);
  await options.reload();await options.waitForFunction(()=>document.getElementById('facility-catalog').options.length===3);assert.equal(await options.locator('#facility-id').isVisible(),false);assert.equal(await options.locator('#native-category').inputValue(),'3');
  await options.locator('#slot-catalog').selectOption('08:00');await options.locator('#add-slot').click();await options.locator('#slot-catalog').selectOption('09:00');await options.locator('#add-fallback').click();await options.locator('#date-mode').selectOption('fixed_date');await options.locator('#target-date').fill('2026-10-24');await options.locator('#enabled').uncheck();await options.locator('#mode').selectOption('dry_run');await options.locator('#rule-form button[type=submit]').click();await options.waitForFunction(()=>document.querySelectorAll('.rule-item').length===2);
- s=await state();const saved=s.rules.find(x=>x.id!==r.id);assert.equal(saved.facilityId,'2');assert.equal(saved.location,'SPORTS - LG1');assert.equal(saved.fallbackSlots[0].id,'09:00');console.log('PASS no-code settings save facility, dates, priority and fallback');
+ s=await state();const saved=s.rules.find(x=>x.id!==r.id);assert.equal(saved.facilityId,'2');assert.equal(saved.location,'SPORTS - LG1');assert.equal(saved.fallbackSlots[0].id,'09:00');assert.equal(saved.retryWindowSeconds,600);assert.equal(saved.retryIntervalSeconds,10);console.log('PASS no-code settings save facility, dates, priority and fallback');
  mode='closed';result=await command('SYNC_NATIVE',{categoryId:'3',facilityId:'2',facilityName:'Badminton Court 1',location:'SPORTS - LG1',targetDate:'2026-10-24'});assert.equal(result.ok,true,JSON.stringify(result));assert.equal(result.result.slots.length,0);assert.equal(result.result.slotSuggestions.length,14);await options.reload();await options.waitForFunction(()=>document.querySelector('#slot-catalog option[value="08:00"]'));assert.match(await options.locator('#slot-catalog option[value="08:00"]').textContent(),/预设时间/);await options.locator('#slot-catalog').selectOption('08:00');await options.locator('#add-slot').click();assert.match(await options.locator('#slots').innerText(),/08:00（预设开始时间）/);console.log('PASS closed booking period offers all preset start times before release');
  for(const remembered of ['prepare','auto','dry_run']){
   await options.locator('#mode').selectOption(remembered);

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "fkHKUST-booking-system",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "直接选择 HKUST 官网设施、日期和时段。晚间确认登录，次日自动执行；支持 dry-run、候补、预订记录核验与重复防护。",
   "minimum_chrome_version": "120",
   "permissions": [
@@ -42,5 +42,5 @@
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'none'"
   },
-  "version_name": "0.1"
+  "version_name": "0.1.1"
 }
